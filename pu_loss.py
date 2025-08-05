@@ -21,6 +21,7 @@ class PULoss(nn.Module):
         self.min_count = 1
     
     def forward(self, inp, target, test=False):
+  
         assert(inp.shape == target.shape)        
 
         if inp.is_cuda:

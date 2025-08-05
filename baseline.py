@@ -6,6 +6,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 from pu_loss import PULoss
+from mamba_ssm import Mamba
 
 class Conv_Net(nn.Module):
     def __init__(self, in_channel, seq_length, hidden_dim, n_output):
@@ -47,7 +48,13 @@ class LSTMNet(nn.Module):
                             num_layers=num_layers, batch_first=True)
         self.bn = nn.BatchNorm1d(hidden_dim)
         self.dropout = nn.Dropout(0.5)
-        self.fc = nn.Linear(hidden_dim, n_output)
+        #self.fc = nn.Linear(hidden_dim, n_output)
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            #nn.Dropout(0.5),
+            nn.Linear(hidden_dim // 2, n_output)
+        )
 
     def forward(self, x):
         # x: (batch, seq_length, in_channel)
@@ -58,6 +65,25 @@ class LSTMNet(nn.Module):
         out = self.dropout(last_output)
         out = self.fc(last_output)
         return out
+
+class MambaClassifier(nn.Module):
+    def __init__(self, input_dim, hidden_dim=64, num_classes=1):
+        super().__init__()
+        self.input_proj = nn.Linear(input_dim, hidden_dim)
+        self.mamba = Mamba(d_model=hidden_dim)
+        self.norm = nn.LayerNorm(hidden_dim)
+        self.pool = nn.AdaptiveAvgPool1d(1) 
+        self.fc = nn.Linear(hidden_dim, num_classes)
+        
+    def forward(self, x):
+        # x: (batch, seq_len, input_dim)
+        x = self.input_proj(x)  # (batch, seq_len, hidden_dim)
+        x = self.mamba(x)       # (batch, seq_len, hidden_dim)
+        x = self.norm(x)
+        x = x.transpose(1, 2)   # For pooling: (batch, hidden_dim, seq_len)
+        x = self.pool(x).squeeze(-1)  # (batch, hidden_dim)
+        x = self.fc(x)          # (batch, num_classes)
+        return x
     
 def train(model, criterion, train_loader, test_loader, lr, epochs, device):
     
@@ -73,7 +99,7 @@ def train(model, criterion, train_loader, test_loader, lr, epochs, device):
         for inputs, labels in tqdm(train_loader):
             # print("Batch unique labels:", labels.unique())
             # assert labels.min() >= 0 and labels.max() < n_output, "Invalid label detected!"
-            if isinstance (model, LSTMNet):
+            if isinstance (model, (LSTMNet, MambaClassifier)):
                 inputs = inputs.permute(0, 2, 1)
                 
             train_batch_size = len(labels) 
@@ -85,8 +111,11 @@ def train(model, criterion, train_loader, test_loader, lr, epochs, device):
             optimizer.zero_grad()
             
             outputs = model(inputs)
+            #print(outputs.shape)
+            #break
 
             if isinstance(criterion, PULoss):
+        
                 loss = criterion(outputs.view(-1), labels)
                 preds = torch.where(
                     outputs > 0,
@@ -96,8 +125,7 @@ def train(model, criterion, train_loader, test_loader, lr, epochs, device):
             else:
                 loss = criterion(outputs, labels)
                 preds = torch.max(outputs, 1)[1]
-           
-            
+            #break
             loss.backward()
             optimizer.step() 
                    
@@ -107,7 +135,7 @@ def train(model, criterion, train_loader, test_loader, lr, epochs, device):
         model.eval()
         
         for inputs_test, labels_test in test_loader:
-            if isinstance (model, LSTMNet):
+            if isinstance (model, (LSTMNet, MambaClassifier)):
                 inputs_test = inputs_test.permute(0, 2, 1)
             test_batch_size = len(labels_test)
             n_test += test_batch_size
