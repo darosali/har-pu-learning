@@ -21,7 +21,7 @@ class PULoss(nn.Module):
         self.min_count = 1
     
     def forward(self, inp, target, test=False):
-  
+
         assert(inp.shape == target.shape)        
 
         if inp.is_cuda:
@@ -45,7 +45,19 @@ class PULoss(nn.Module):
 
         return positive_risk + negative_risk
     
+class PULossWrapped(nn.Module):
+    def __init__(self, prior, loss=lambda x: torch.nn.functional.softplus(-x), gamma=1, beta=0, nnPU=False):
+        super().__init__()
+        self.puloss = PULoss(prior=prior, loss=loss, gamma=gamma, beta=beta, nnPU=nnPU)
     
+    def forward(self, inp, targets):
+        targets_pu = targets.clone()
+        targets_pu[targets_pu == 0] = -1 
+        inp = inp[:, 1]
+        
+        return self.puloss(inp, targets_pu)    
+        
+        
 class nnPULoss(nn.Module):
     def __init__(self, prior, beta=0, gamma=1, nnPU=True):
        
