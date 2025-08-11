@@ -57,7 +57,38 @@ class PULossWrapped(nn.Module):
         
         return self.puloss(inp, targets_pu)    
         
+
+class PURankingLoss(nn.Module):
+    def __init__(self, margin=1.0):
+        super().__init__()
+        self.margin = margin
         
+    def forward(self, scores, target):
+        """
+        scores: (batch_size, num_classes) or (batch_size,)\\
+        target: tensor of shape (batch_size,) with 1 for positive, -1 for unlabeled
+        """
+        
+        # Take positive class logits
+        if scores.ndim == 2 and scores.size(1) > 1:
+            scores = scores[:, 1]
+        
+        pos_mask = target == 1
+        unl_mask = target == 0
+        
+        pos_scores = scores[pos_mask]
+        unl_scores = scores[unl_mask]
+        
+        if pos_scores.numel() == 0 or unl_mask.numel() == 1:
+            return torch.tensor(0.0, device=scores.device, requires_grad=True)
+        
+        # diff[i, j] = Pi - Uj
+        diff = pos_scores.unsqueeze(1) - unl_scores.unsqueeze(0)
+        
+        loss = torch.relu(self.margin - diff).mean()
+        
+        return loss
+
 class nnPULoss(nn.Module):
     def __init__(self, prior, beta=0, gamma=1, nnPU=True):
        
