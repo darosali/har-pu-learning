@@ -85,19 +85,17 @@ class LSTMNet(nn.Module):
 #         x = self.fc(x)          # (batch, num_classes)
 #         return x
 
-# One residual block of Mamba + LayerNorm + optional dropout
 class MambaBlock(nn.Module):
     def __init__(self, hidden_dim, dropout=0.1):
         super().__init__()
-        self.mamba = Mamba(d_model=hidden_dim)  # assumes it keeps shape
+        self.mamba = Mamba(d_model=hidden_dim)  
         self.norm = nn.LayerNorm(hidden_dim)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        residual = x
         x = self.mamba(x)
         x = self.dropout(x)
-        return self.norm(x + residual)  # residual connection
+        return self.norm(x) 
 
 
 class MambaClassifier(nn.Module):
@@ -110,7 +108,6 @@ class MambaClassifier(nn.Module):
             *[MambaBlock(hidden_dim, dropout=dropout) for _ in range(num_layers)]
         )
 
-        # Final pooling + classification head
         self.pool = nn.AdaptiveAvgPool1d(1) 
         self.fc = nn.Linear(hidden_dim, num_classes)
         
@@ -121,6 +118,7 @@ class MambaClassifier(nn.Module):
         x = x.transpose(1, 2)            # (batch, hidden_dim, seq_len)
         x = self.pool(x).squeeze(-1)     # (batch, hidden_dim)
         return self.fc(x)                # (batch, num_classes)
+    
     
 def train(model, criterion, train_loader, test_loader, lr, epochs, device):
     
