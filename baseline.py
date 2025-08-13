@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
-from pu_loss import PULoss
+from pu_loss import PULoss, PURankingLoss
 from mamba_ssm import Mamba
 
 class Conv_Net(nn.Module):
@@ -66,24 +66,61 @@ class LSTMNet(nn.Module):
         out = self.fc(last_output)
         return out
 
+# class MambaClassifier(nn.Module):
+#     def __init__(self, input_dim, hidden_dim=64, num_classes=1):
+#         super().__init__()
+#         self.input_proj = nn.Linear(input_dim, hidden_dim)
+#         self.mamba = Mamba(d_model=hidden_dim)
+#         self.norm = nn.LayerNorm(hidden_dim)
+#         self.pool = nn.AdaptiveAvgPool1d(1) 
+#         self.fc = nn.Linear(hidden_dim, num_classes)
+        
+#     def forward(self, x):
+#         # x: (batch, seq_len, input_dim)
+#         x = self.input_proj(x)  # (batch, seq_len, hidden_dim)
+#         x = self.mamba(x)       # (batch, seq_len, hidden_dim)
+#         x = self.norm(x)
+#         x = x.transpose(1, 2)   # For pooling: (batch, hidden_dim, seq_len)
+#         x = self.pool(x).squeeze(-1)  # (batch, hidden_dim)
+#         x = self.fc(x)          # (batch, num_classes)
+#         return x
+
+# One residual block of Mamba + LayerNorm + optional dropout
+class MambaBlock(nn.Module):
+    def __init__(self, hidden_dim, dropout=0.1):
+        super().__init__()
+        self.mamba = Mamba(d_model=hidden_dim)  # assumes it keeps shape
+        self.norm = nn.LayerNorm(hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        residual = x
+        x = self.mamba(x)
+        x = self.dropout(x)
+        return self.norm(x + residual)  # residual connection
+
+
 class MambaClassifier(nn.Module):
-    def __init__(self, input_dim, hidden_dim=64, num_classes=1):
+    def __init__(self, input_dim, hidden_dim=128, num_classes=1, num_layers=4, dropout=0.3):
         super().__init__()
         self.input_proj = nn.Linear(input_dim, hidden_dim)
-        self.mamba = Mamba(d_model=hidden_dim)
-        self.norm = nn.LayerNorm(hidden_dim)
+
+        # Stack of Mamba residual blocks
+        self.blocks = nn.Sequential(
+            *[MambaBlock(hidden_dim, dropout=dropout) for _ in range(num_layers)]
+        )
+
+        # Final pooling + classification head
         self.pool = nn.AdaptiveAvgPool1d(1) 
         self.fc = nn.Linear(hidden_dim, num_classes)
         
     def forward(self, x):
-        # x: (batch, seq_len, input_dim)
-        x = self.input_proj(x)  # (batch, seq_len, hidden_dim)
-        x = self.mamba(x)       # (batch, seq_len, hidden_dim)
-        x = self.norm(x)
-        x = x.transpose(1, 2)   # For pooling: (batch, hidden_dim, seq_len)
-        x = self.pool(x).squeeze(-1)  # (batch, hidden_dim)
-        x = self.fc(x)          # (batch, num_classes)
-        return x
+        # Input: (batch, seq_len, input_dim)
+        x = self.input_proj(x)           # (batch, seq_len, hidden_dim)
+        x = self.blocks(x)               # stacked Mamba layers
+        x = x.transpose(1, 2)            # (batch, hidden_dim, seq_len)
+        x = self.pool(x).squeeze(-1)     # (batch, hidden_dim)
+        return self.fc(x)                # (batch, num_classes)
     
 def train(model, criterion, train_loader, test_loader, lr, epochs, device):
     
