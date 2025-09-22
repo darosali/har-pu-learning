@@ -53,7 +53,10 @@ class PULossWrapped(nn.Module):
     def forward(self, inp, targets):
         targets_pu = targets.clone()
         targets_pu[targets_pu == 0] = -1 
-        inp = inp[:, 1]
+        if (inp.shape[1] > 1):
+            inp = inp[:, 1]
+        else:
+            inp = inp[:, 0]
         
         return self.puloss(inp, targets_pu)    
         

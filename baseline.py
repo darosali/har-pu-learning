@@ -200,3 +200,4 @@ def train(model, criterion, train_loader, test_loader, lr, epochs, device):
         avg_test_loss = test_loss / n_test
         print (f'Epoch [{(epoch+1)}/{epochs}], tr_loss: {avg_train_loss:.5f} tr_acc: {train_acc:.5f} test_loss: {avg_test_loss:.5f}, test_acc: {test_acc:.5f}')
     return model
+
