@@ -61,34 +61,59 @@ class PULossWrapped(nn.Module):
         return self.puloss(inp, targets_pu)    
         
 
-class PURankingLoss(nn.Module):
-    def __init__(self, margin=1.0):
+class PUAsymLoss_Direct(nn.Module):
+    """ L = -E_pos[log f1] - E_unl[ log(f0 + c) ],  c = gamma/(1-gamma) """
+    def __init__(self, gamma=0.5):
         super().__init__()
-        self.margin = margin
-        
-    def forward(self, scores, target):
-        """
-        scores: (batch_size, num_classes) or (batch_size,)\\
-        target: tensor of shape (batch_size,) with 1 for positive, -1 for unlabeled
-        """
-        
-        # Take positive class logits
-        if scores.ndim == 2 and scores.size(1) > 1:
-            scores = scores[:, 1]
-        
-        pos_mask = target == 1
-        unl_mask = target == 0
-        
-        pos_scores = scores[pos_mask]
-        unl_scores = scores[unl_mask]
-        
-        if pos_scores.numel() == 0 or unl_mask.numel() == 1:
-            return torch.tensor(0.0, device=scores.device, requires_grad=True)
-        
-        # diff[i, j] = Pi - Uj
-        diff = pos_scores.unsqueeze(1) - unl_scores.unsqueeze(0)
-        
-        loss = torch.relu(self.margin - diff).mean()
-        
-        return loss
+        self.gamma = gamma
+
+    def forward(self, logits, y_true):
+    
+        logp = F.log_softmax(logits, dim=1)
+        log_f0, log_f1 = logp[:,0], logp[:,1]
+
+        pos_mask = (y_true == 1)
+        unl_mask = (y_true == 0)
+
+        c = self.gamma / (1.0 - self.gamma)
+        log_c = torch.log(torch.as_tensor(c, dtype=logits.dtype, device=logits.device))
+
+        loss_pos = -log_f1[pos_mask].mean() if pos_mask.any() else logits.new_tensor(0.)
+        # log(f0 + c) = logaddexp(log f0, log c)
+        loss_unl = -torch.logaddexp(log_f0[unl_mask], log_c).mean() if unl_mask.any() else logits.new_tensor(0.)
+
+        return loss_pos + loss_unl
+
+class PUAsymLoss_CE(nn.Module):
+    """
+    L = -E_pos[log f1] - E_unl[log f0] - E_unl[ log(1 + c/f0) ]
+      = CE part  + penalty,
+    log(1 + c/f0) = softplus(log c - log f0)
+    """
+    def __init__(self, gamma=0.5):
+        super().__init__()
+        self.gamma = gamma
+        self.ce = nn.CrossEntropyLoss(reduction='none')
+
+    def forward(self, logits, y_true):
+        logp = F.log_softmax(logits, dim=1)
+        log_f0, log_f1 = logp[:,0], logp[:,1]
+
+        pos_mask = (y_true == 1)
+        unl_mask = (y_true == 0)
+
+        # CE on logits
+        ce_vec = self.ce(logits, y_true) 
+        loss_pos = ce_vec[pos_mask].mean() if pos_mask.any() else logits.new_tensor(0.)
+        loss_unl = ce_vec[unl_mask].mean() if unl_mask.any() else logits.new_tensor(0.)
+
+        c = self.gamma / (1.0 - self.gamma)
+        log_c = torch.log(torch.as_tensor(c, dtype=logits.dtype, device=logits.device))
+        # penalty = -E_unl log(1 + c/f0) = -E_unl softplus(log c - log f0)
+        penalty = -F.softplus(log_c - log_f0[unl_mask]).mean() if unl_mask.any() else logits.new_tensor(0.)
+
+        return loss_pos + loss_unl + penalty
+
+    
+
 
