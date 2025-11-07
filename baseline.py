@@ -5,17 +5,17 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
-from pu_loss import PULoss, PURankingLoss
-from mamba_ssm import Mamba
+from pu_loss import PULoss
+from mamba_ssm import Mamba, Mamba2
 
 class Conv_Net(nn.Module):
-    def __init__(self, in_channel, seq_length, hidden_dim, n_output):
+    def __init__(self, in_channel, seq_length, hidden_dim, n_output, dropout=0.5):
         super().__init__()
         self.conv1 = nn.Conv1d(in_channel, 32, kernel_size=3, padding=1)
         self.conv2 = nn.Conv1d(32, 64, kernel_size=3, padding=1)
         self.relu = nn.ReLU()
         self.maxpool = nn.MaxPool1d(2)
-        self.dropout = nn.Dropout(0.5)
+        self.dropout = nn.Dropout(dropout)
         self.flatten = nn.Flatten()
         self.fc1 = nn.Linear(64 * (seq_length // 2), hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, n_output)
@@ -66,25 +66,6 @@ class LSTMNet(nn.Module):
         out = self.fc(last_output)
         return out
 
-# class MambaClassifier(nn.Module):
-#     def __init__(self, input_dim, hidden_dim=64, num_classes=1):
-#         super().__init__()
-#         self.input_proj = nn.Linear(input_dim, hidden_dim)
-#         self.mamba = Mamba(d_model=hidden_dim)
-#         self.norm = nn.LayerNorm(hidden_dim)
-#         self.pool = nn.AdaptiveAvgPool1d(1) 
-#         self.fc = nn.Linear(hidden_dim, num_classes)
-        
-#     def forward(self, x):
-#         # x: (batch, seq_len, input_dim)
-#         x = self.input_proj(x)  # (batch, seq_len, hidden_dim)
-#         x = self.mamba(x)       # (batch, seq_len, hidden_dim)
-#         x = self.norm(x)
-#         x = x.transpose(1, 2)   # For pooling: (batch, hidden_dim, seq_len)
-#         x = self.pool(x).squeeze(-1)  # (batch, hidden_dim)
-#         x = self.fc(x)          # (batch, num_classes)
-#         return x
-
 class MambaBlock(nn.Module):
     def __init__(self, hidden_dim, dropout=0.1):
         super().__init__()
@@ -118,8 +99,50 @@ class MambaClassifier(nn.Module):
         x = x.transpose(1, 2)            # (batch, hidden_dim, seq_len)
         x = self.pool(x).squeeze(-1)     # (batch, hidden_dim)
         return self.fc(x)                # (batch, num_classes)
-    
-    
+
+
+class Mamba2Block(nn.Module):
+    def __init__(self, hidden_dim, dropout=0.1):
+        super().__init__()
+        self.mamba = Mamba2(d_model=hidden_dim) 
+        print(self.mamba.d_model, self.mamba.expand, self.mamba.headdim)
+        self.norm = nn.LayerNorm(hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        x = self.mamba(x)
+        x = self.dropout(x)
+        return self.norm(x) 
+
+
+class Mamba2Classifier(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_classes=1, num_layers=4, dropout=0.3):
+        super().__init__()
+        #self.input_proj = nn.Linear(input_dim, hidden_dim)
+        self.input_proj = nn.Conv1d(input_dim, hidden_dim, kernel_size=3, padding=1)
+        self.input_norm = nn.BatchNorm1d(hidden_dim)
+        #self.input_norm = nn.Identity()
+
+        # Stack of Mamba residual blocks
+        self.blocks = nn.Sequential(
+            *[Mamba2Block(hidden_dim, dropout=dropout) for _ in range(num_layers)]
+        )
+
+        self.pool = nn.AdaptiveAvgPool1d(1) 
+        self.fc = nn.Linear(hidden_dim, num_classes)
+        
+    def forward(self, x):
+        # Input: (batch, seq_len, input_dim)
+        x = x.transpose(1, 2)
+        x = self.input_proj(x)           # (batch, seq_len, hidden_dim)
+        #x = x.transpose(1, 2)
+        x = self.input_norm(x)
+        x = x.transpose(1, 2)
+        x = self.blocks(x)               # stacked Mamba layers
+        x = x.transpose(1, 2)            # (batch, hidden_dim, seq_len)
+        x = self.pool(x).squeeze(-1)     # (batch, hidden_dim)
+        return self.fc(x)                # (batch, num_classes)
+        
 def train(model, criterion, train_loader, test_loader, lr, epochs, device):
     
     #criterion = nn.CrossEntropyLoss()
@@ -134,7 +157,7 @@ def train(model, criterion, train_loader, test_loader, lr, epochs, device):
         for inputs, labels in tqdm(train_loader):
             # print("Batch unique labels:", labels.unique())
             # assert labels.min() >= 0 and labels.max() < n_output, "Invalid label detected!"
-            if isinstance (model, (LSTMNet, MambaClassifier)):
+            if isinstance (model, (LSTMNet, MambaClassifier, Mamba2Classifier)):
                 inputs = inputs.permute(0, 2, 1)
                 
             train_batch_size = len(labels) 
@@ -170,7 +193,7 @@ def train(model, criterion, train_loader, test_loader, lr, epochs, device):
         model.eval()
         
         for inputs_test, labels_test in test_loader:
-            if isinstance (model, (LSTMNet, MambaClassifier)):
+            if isinstance (model, (LSTMNet, MambaClassifier, Mamba2Classifier)):
                 inputs_test = inputs_test.permute(0, 2, 1)
             test_batch_size = len(labels_test)
             n_test += test_batch_size
